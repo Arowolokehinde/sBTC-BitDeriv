@@ -181,3 +181,115 @@
 )
 
 
+
+;; Private helper functions
+(define-private (exercise-call
+    (option-id uint)
+    (option {
+        creator: principal,
+        buyer: (optional principal),
+        option-type: uint,
+        strike-price: uint,
+        premium: uint,
+        expiry: uint,
+        btc-amount: uint,
+        is-active: bool,
+        is-executed: bool,
+        creation-time: uint
+    })
+    (holder principal))
+    (let
+        ((strike-amount (* (get strike-price option) (get btc-amount option)))
+         (holder-balance (default-to { balance: u0 } (map-get? BTCBalances { holder: holder }))))
+        ;; Transfer strike price from holder to creator
+        (try! (stx-transfer? strike-amount holder (get creator option)))
+        ;; Transfer escrowed BTC to holder
+        (map-set BTCBalances
+            { holder: holder }
+            { balance: (+ (get balance holder-balance) (get btc-amount option)) })
+        ;; Remove from escrow
+        (map-delete EscrowedBTC { option-id: option-id })
+        (ok true)
+    )
+)
+
+
+
+
+
+(define-public (exercise-option (option-id uint))
+    (let
+        ((option (unwrap! (map-get? Options { option-id: option-id }) ERR-NOT-FOUND))
+         (holder tx-sender))
+
+        ;; Validate option state
+        (asserts! (is-eq (some holder) (get buyer option)) ERR-UNAUTHORIZED)
+        (asserts! (not (get is-executed option)) ERR-ALREADY-EXECUTED)
+        (asserts! (< stacks-block-time (get expiry option)) ERR-EXPIRED)
+
+        ;; Exercise based on option type
+        (if (is-eq (get option-type option) CALL)
+            (try! (exercise-call option-id option holder))
+            (try! (exercise-put option-id option holder)))
+
+        ;; Update option state
+        (map-set Options
+            { option-id: option-id }
+            (merge option { is-executed: true }))
+        (ok true)
+    )
+)
+
+(define-private (exercise-put
+    (option-id uint)
+    (option {
+        creator: principal,
+        buyer: (optional principal),
+        option-type: uint,
+        strike-price: uint,
+        premium: uint,
+        expiry: uint,
+        btc-amount: uint,
+        is-active: bool,
+        is-executed: bool,
+        creation-time: uint
+    })
+    (holder principal))
+    (let
+        ((strike-amount (* (get strike-price option) (get btc-amount option)))
+         (creator-balance (default-to { balance: u0 } (map-get? BTCBalances { holder: (get creator option) }))))
+        ;; Transfer BTC from holder to creator
+        (try! (transfer-btc holder (get creator option) (get btc-amount option)))
+        ;; Transfer strike price from creator to holder
+        (try! (stx-transfer? strike-amount (get creator option) holder))
+        (ok true)
+    )
+)
+
+;; Read-only functions
+(define-read-only (get-option (option-id uint))
+    (map-get? Options { option-id: option-id })
+)
+
+(define-read-only (get-btc-balance (holder principal))
+    (default-to { balance: u0 }
+        (map-get? BTCBalances { holder: holder }))
+)
+
+(define-read-only (get-user-options (user principal))
+    (default-to
+        { created: (list ), purchased: (list ) }
+        (map-get? UserOptions { user: user }))
+)
+
+;; Oracle functions
+(define-public (set-btc-price (price uint))
+    (begin
+        (asserts! (is-contract-owner) ERR-UNAUTHORIZED)
+        (var-set oracle-price price)
+        (ok true))
+)
+
+(define-read-only (get-btc-price)
+    (var-get oracle-price)
+)
