@@ -20,9 +20,15 @@
 (define-constant PUT u2)
 
 ;; Data Maps
-(define-map BTCBalances 
+(define-map BTCBalances
     { holder: principal }
     { balance: uint }
+)
+
+;; Escrow map to track BTC locked in options
+(define-map EscrowedBTC
+    { option-id: uint }
+    { amount: uint }
 )
 
 (define-map Options
@@ -37,7 +43,7 @@
         btc-amount: uint,
         is-active: bool,
         is-executed: bool,
-        creation-height: uint
+        creation-time: uint
     }
 )
 
@@ -110,3 +116,67 @@
                   purchased: (unwrap! (as-max-len? (append (get purchased user-options) option-id) u20) ERR-UNAUTHORIZED) })))
     )
 )
+
+
+
+
+;; Option Management
+(define-public (create-option
+    (option-type uint)
+    (strike-price uint)
+    (premium uint)
+    (expiry uint)
+    (btc-amount uint))
+    (let
+        ((option-id (+ (var-get next-option-id) u1))
+         (sender tx-sender)
+         (current-balance (default-to { balance: u0 } (map-get? BTCBalances { holder: sender }))))
+
+        ;; Validate inputs
+        (asserts! (or (is-eq option-type CALL) (is-eq option-type PUT)) ERR-INVALID-AMOUNT)
+        (asserts! (> strike-price u0) ERR-INVALID-PRICE)
+        (asserts! (> premium u0) ERR-INVALID-PRICE)
+        (asserts! (> expiry stacks-block-time) ERR-EXPIRED)
+        (asserts! (> btc-amount u0) ERR-INVALID-AMOUNT)
+
+        ;; For CALL options, ensure creator has enough BTC
+        (asserts! (if (is-eq option-type CALL)
+            (>= (get balance current-balance) btc-amount)
+            true) ERR-INSUFFICIENT-BALANCE)
+
+        ;; Create option
+        (map-set Options
+            { option-id: option-id }
+            {
+                creator: sender,
+                buyer: none,
+                option-type: option-type,
+                strike-price: strike-price,
+                premium: premium,
+                expiry: expiry,
+                btc-amount: btc-amount,
+                is-active: true,
+                is-executed: false,
+                creation-time: stacks-block-time
+            })
+
+        ;; Lock BTC for CALL options by reducing creator's balance and tracking in escrow
+        (if (is-eq option-type CALL)
+            (begin
+                ;; Deduct BTC from creator's balance
+                (map-set BTCBalances
+                    { holder: sender }
+                    { balance: (- (get balance current-balance) btc-amount) })
+                ;; Add to escrow
+                (map-set EscrowedBTC
+                    { option-id: option-id }
+                    { amount: btc-amount }))
+            true)
+
+        ;; Update state
+        (var-set next-option-id option-id)
+        (try! (update-user-options sender option-id true))
+        (ok option-id)
+    )
+)
+
