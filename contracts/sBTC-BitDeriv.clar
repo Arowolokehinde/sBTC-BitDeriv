@@ -14,6 +14,7 @@
 (define-constant ERR-ALREADY-EXECUTED (err u6))
 (define-constant ERR-INVALID-PRICE (err u7))
 (define-constant ERR-OPTION-NOT-ACTIVE (err u8))
+(define-constant ERR-INVALID-SIGNATURE (err u9))
 
 ;; Option Types
 (define-constant CALL u1)
@@ -55,6 +56,7 @@
 ;; Data Variables
 (define-data-var next-option-id uint u0)
 (define-data-var oracle-price uint u0)
+(define-data-var oracle-public-key (buff 33) 0x000000000000000000000000000000000000000000000000000000000000000000)
 
 ;; Authorization
 (define-private (is-contract-owner)
@@ -290,6 +292,44 @@
         (ok true))
 )
 
+;; Set oracle public key (only contract owner)
+(define-public (set-oracle-public-key (pubkey (buff 33)))
+    (begin
+        (asserts! (is-contract-owner) ERR-UNAUTHORIZED)
+        (var-set oracle-public-key pubkey)
+        (ok true))
+)
+
+;; Verified price update using secp256r1-verify (Clarity 4 feature)
+;; This ensures the price comes from a trusted oracle with cryptographic proof
+(define-public (set-btc-price-verified
+    (price uint)
+    (timestamp uint)
+    (signature (buff 64)))
+    (let
+        ((message-hash (sha256 (concat (concat (uint-to-buff price) (uint-to-buff timestamp)) 0x42544300))) ;; "BTC" suffix
+         (pubkey (var-get oracle-public-key)))
+
+        ;; Verify the signature using secp256r1
+        (asserts! (secp256r1-verify message-hash signature pubkey) ERR-INVALID-SIGNATURE)
+
+        ;; Optional: Add timestamp validation to prevent replay attacks
+        (asserts! (>= timestamp stacks-block-time) ERR-EXPIRED)
+
+        ;; Update price
+        (var-set oracle-price price)
+        (ok true))
+)
+
+;; Helper to convert uint to buffer for hashing
+(define-private (uint-to-buff (value uint))
+    (unwrap-panic (to-consensus-buff? value))
+)
+
 (define-read-only (get-btc-price)
     (var-get oracle-price)
+)
+
+(define-read-only (get-oracle-public-key)
+    (var-get oracle-public-key)
 )
