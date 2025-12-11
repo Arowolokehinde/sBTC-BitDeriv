@@ -284,6 +284,65 @@
         (map-get? UserOptions { user: user }))
 )
 
+;; Metadata functions using to-ascii? (Clarity 4 feature)
+
+;; ACTUAL to-ascii? USAGE: Convert utf8 string to ascii
+(define-read-only (convert-utf8-to-ascii (text (string-utf8 100)))
+    (to-ascii? text)
+)
+
+
+;; Example: Get option label with to-ascii? conversion
+(define-read-only (get-option-label (option-id uint))
+    (match (map-get? Options { option-id: option-id })
+        option
+            (let ((label-utf8 (if (is-eq (get option-type option) CALL)
+                                  u"BTC-CALL-Option"
+                                  u"BTC-PUT-Option")))
+                (to-ascii? label-utf8))
+        (err u999))
+)
+
+;; Get human-readable option type name
+(define-read-only (get-option-type-name (option-type uint))
+    (if (is-eq option-type CALL)
+        (some "CALL")
+        (if (is-eq option-type PUT)
+            (some "PUT")
+            none))
+)
+
+;; Get option status description
+(define-read-only (get-option-status (option-id uint))
+    (match (map-get? Options { option-id: option-id })
+        option
+            (if (get is-executed option)
+                (some "EXECUTED")
+                (if (>= stacks-block-time (get expiry option))
+                    (some "EXPIRED")
+                    (if (is-some (get buyer option))
+                        (some "ACTIVE-PURCHASED")
+                        (some "ACTIVE-AVAILABLE"))))
+        none)
+)
+
+;; Get full option description with all details
+(define-read-only (get-option-details (option-id uint))
+    (match (map-get? Options { option-id: option-id })
+        option
+            (some {
+                type: (unwrap-panic (get-option-type-name (get option-type option))),
+                status: (unwrap-panic (get-option-status option-id)),
+                strike-price: (get strike-price option),
+                premium: (get premium option),
+                btc-amount: (get btc-amount option),
+                expiry: (get expiry option),
+                creator: (get creator option),
+                buyer: (get buyer option)
+            })
+        none)
+)
+
 ;; Oracle functions
 (define-public (set-btc-price (price uint))
     (begin
